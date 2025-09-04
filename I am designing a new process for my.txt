@@ -1,0 +1,30 @@
+I am designing a new process for my ai Agent, and I will be giving you instructions to design the whole process. What i want you to do is take my instructions analyze each and every functionality i want and design the whole process by giving me code snippets and structure for the instructions.
+
+So, i am planning to integrate a ppt formatter and how the flow of the whole process is:
+
+1. I will be taking user prompt and sending it to a planner phase of the process where first it will be doing a comprehensive change on the whole prompt with the help of Gemini LLM model and then make the comprehended new prompt ready to be sending on next phase.
+
+2. Now the planner here plays a very crucial role because lets just say if the user do not specify the pages of the ppt we will be giving maximum 8 pages of the ppt at default then the planner will comprehensively decide what each page of ppt should be having as a content excluding last and first page which will be of conclusion and introduction respectively. So, by analyzing the prompt the content of each page will be decided by the planner.
+
+3. Now on to the second phase we will be doing three process sequentially the planner content which we got from the first phase so each page of ppt will be first planning on the content they have to be making on the page then that plan will lead to the scrapping for the content which we planned for the page and then we will move to the content formatting for the page.
+
+4. Now here comes the most important part, whatever content which we scrapped now have to be embedded and that we will be doing with the help of Large Language Model for this context let's say Gemini-2.0-flash so here the llm will be represent as a specialized html coder which will be writing code for the page of ppt. Every content will be represented on the page using html.
+
+5. The page will be defined by the ratios of ppt which is generally 16:9 so all the contents should be summarized and be represented between these ratios.
+
+Now, to introduce more Context on the project:
+ 
+	- the Main procedures for the first phase are:
+
+		1.The analysed prompt which will be refactored using gemini and adding context on 		how to perceive the whole context.
+		
+		2. The content which the llm provide for each slide of the ppt.
+
+	- the second phase:
+
+		1. The second phase three way procedure for all the slides the plan which will plan 		what will be scrapped for the content of the slide with the help of context 			provided by the first phase. the scrapping for the content and the html code 			generated with the help of LLm for the said scrapped content.
+		
+		2. The html code will be represent in the iframe where the output will be rendered 		and we can see the rendered page for each content.
+
+Every aspect of this project lies on how we represent our LLM and that depends on how we are representing our llm to behave so i am providing you with a short document of some of the ways companies like manus and devin represented llm to behave take inspiration from that and comprehensively define each section of attitude the llm should represent
+first give the structure for the process that when i will ask for the file give the snippet for the file then

@@ -1,0 +1,10 @@
+I am going to built a travelogue phone app where by people destination selection it will give them the destination famous spots, the hotels, Restaurants(be it ambiotic or normal which will be selected by them){This data will be collected from the different websites}, It will also tell them about the traffic fares to get there and all the niche things people will get when they go there this things will be taken from the sites or gpt(it will give peope there plan according to there different section o time and there ambience)->this part will be the gpt wrapper
+
+Things we need to get:-
+-the places information through the sites.
+
+Rest all will be done through GPT
+
+
+Monetization: Will discuss.
+ 

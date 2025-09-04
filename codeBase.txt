@@ -1,0 +1,464 @@
+# main.py
+
+from fastapi import FastAPI
+from routes import combined_routes
+
+app = FastAPI()
+
+app.include_router(combined_routes.router, prefix="/api")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
+# deepseek_client.py
+
+import openai
+
+# Configure DeepSeek endpoint and API key.
+openai.api_base = "https://api.deepseek.com"
+openai.api_key = "sk-021e2881dd954fb8b66f0141876e584e"  # Replace with your actual key
+
+def rewrite_section(text: str) -> str:
+    """
+    Call the DeepSeek API to rewrite the given text with an empathetic tone.
+    """
+    try:
+        response = openai.ChatCompletion.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that rewrites text in a human, empathetic tone."},
+                {"role": "user", "content": text}
+            ]
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print("DeepSeek API error:", e)
+        return text
+
+# gemini_scrapper.py
+
+import os
+import time
+import requests
+from bs4 import BeautifulSoup
+from googlesearch import search
+from io import StringIO
+import pandas as pd
+from dotenv import load_dotenv
+
+# Import the Gemini client interface
+from google import genai
+
+# Import DeepSeek rewriting function
+from utils.deepseek_client import rewrite_section
+
+# Load environment variables
+load_dotenv()
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    raise Exception("GEMINI_API_KEY key not set in environment variable 'GEMINI_API_KEY'.")
+
+# Initialize the Gemini client
+client = genai.Client(api_key=GEMINI_API_KEY)
+
+# Define the generation configuration
+generation_config = genai.types.GenerateContentConfig(
+    temperature=1,
+    top_p=1,
+    top_k=1,
+    max_output_tokens=1500
+)
+
+def generate_content(prompts):
+    combined_prompt = "\n".join(prompts)
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=[combined_prompt],
+        config=generation_config
+    )
+    return response
+
+def scrape_page(url, selector=None, retries=3):
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/115.0.0.0 Safari/537.36"
+        )
+    }
+    for attempt in range(1, retries + 1):
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code == 429:
+                print(f"Received 429 for {url}. Attempt {attempt} of {retries}. Sleeping for 60 seconds.")
+                time.sleep(60)
+                continue
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, "html.parser")
+            if selector:
+                elements = soup.select(selector)
+            else:
+                elements = soup.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+            texts = [el.get_text(strip=True) for el in elements if el.get_text(strip=True)]
+            page_text = "\n".join(texts)
+            table_text = extract_tables(soup)
+            return page_text + "\n" + table_text
+        except Exception as e:
+            print(f"Error scraping {url} on attempt {attempt}: {e}")
+            time.sleep(5 * attempt)
+    return ""
+
+def extract_tables(soup):
+    tables = soup.find_all("table")
+    all_tables_text = ""
+    for idx, table in enumerate(tables, start=1):
+        try:
+            df_list = pd.read_html(StringIO(str(table)))
+            if df_list:
+                df = df_list[0]
+                all_tables_text += f"\n[Table {idx}]\n" + df.to_string(index=False) + "\n"
+        except Exception as e:
+            print(f"Error extracting table {idx}: {e}")
+    return all_tables_text
+
+def combined_scrape(query, num_urls=3, min_length=100, selector=None):
+    combined_text = ""
+    urls = []
+    attempts = 0
+    max_attempts = 3
+    while attempts < max_attempts:
+        try:
+            for url in search(query, num_results=num_urls, sleep_interval=2):
+                urls.append(url)
+            break
+        except Exception as e:
+            if "429" in str(e):
+                print(f"Rate limited during Google search for query '{query}'. Sleeping for 60 seconds. Attempt {attempts+1} of {max_attempts}.")
+                time.sleep(60)
+            else:
+                print(f"Error during Google search for query '{query}': {e}. Retrying...")
+                time.sleep(5)
+            attempts += 1
+    if not urls:
+        print(f"No URLs found for query '{query}'.")
+        return ""
+    print(f"URLs found for query '{query}': {urls}")
+    for url in urls:
+        text = scrape_page(url, selector=selector)
+        if len(text) >= min_length:
+            combined_text += f"--- Content from {url} ---\n{text}\n\n"
+        else:
+            print(f"Not enough content from {url} (length={len(text)}).")
+        time.sleep(1)
+    if combined_text.strip():
+        return combined_text
+    else:
+        print(f"No sufficient content scraped for query '{query}'.")
+        return ""
+
+def generate_search_queries(section, topic):
+    prompt = (
+        f"Generate 3 concise, keyword-focused search queries to gather network information on '{topic}' for the research paper section '{section}'. "
+        "Return each query on a separate line."
+    )
+    try:
+        response = generate_content([prompt])
+        if response.text:
+            queries = [line.strip() for line in response.text.splitlines() if line.strip()]
+            print(f"Generated queries for '{section}': {queries}")
+            return queries
+        else:
+            print(f"No queries generated for '{section}' from Gemini API.")
+            return [f"{topic} {section}"]
+    except Exception as e:
+        print(f"Error generating search queries for {section} using Gemini API: {e}")
+        return [f"{topic} {section}"]
+
+def format_text_with_ai(text):
+    prompt = (
+        "You are a scholarly researcher tasked with synthesizing a vast amount of research data. "
+        "Given the following raw content, produce a comprehensive, cohesive narrative summary in an academic style. "
+        "Ensure the text is detailed and well-structured.\n\n" + text
+    )
+    try:
+        response = generate_content([prompt])
+        formatted_text = response.text if response.text else text
+        rewritten_text = rewrite_section(formatted_text)
+        return rewritten_text
+    except Exception as e:
+        print(f"Error during AI formatting using Gemini API: {e}")
+        return text
+
+def ensure_length_limit(text, limit):
+    if len(text) <= limit:
+        return text
+    prompt = (
+        f"Rewrite and condense the following text into a detailed narrative summary in academic style, ensuring the final output is no longer than {limit} characters. "
+        "Generate a cohesive summary that covers all aspects without simply truncating.\n\n" + text
+    )
+    try:
+        response = generate_content([prompt])
+        summarized_text = response.text if response.text else text
+        if len(summarized_text) > limit:
+            summarized_text = summarized_text[:limit] + " [Content truncated]"
+        rewritten_summary = rewrite_section(summarized_text)
+        return rewritten_summary
+    except Exception as e:
+        print(f"Error during summarization for length limit using Gemini API: {e}")
+        return text[:limit] + " [Content truncated]"
+
+def generate_representation(section_text):
+    prompt = (
+        "Based on the provided section text, generate a supplementary representation section that includes key statistical data, "
+        "tables, and bullet lists summarizing insights and trends in an academic style. Format your answer with clear labels like [Table] or [Bullet List].\n\n"
+        + section_text
+    )
+    try:
+        response = generate_content([prompt])
+        representation_text = response.text if response.text else ""
+        return representation_text
+    except Exception as e:
+        print(f"Error generating representation: {e}")
+        return ""
+
+def generate_research_paper(research_prompt):
+    """
+    For a given research prompt, generate a research paper with fixed academic sections.
+    Returns a dictionary with keys:
+       "Abstract", "Introduction", "Literature Review", "Methodology", 
+       "Results & Discussion", "Conclusion", "References"
+    """
+    sections = {
+        "Introduction": "Provide an overview and background information on the topic.",
+        "Literature Review": "Summarize existing research, key studies, and findings.",
+        "Methodology": "Detail the methods, techniques, and tools used in the research.",
+        "Results & Discussion": "Describe the data, findings, and analysis, and discuss implications.",
+        "Conclusion": "Summarize the research, discuss limitations, and suggest future directions."
+    }
+    result_dict = {}
+    
+    # Process each section by generating queries, scraping, formatting, and representation.
+    for section, desc in sections.items():
+        print(f"\n--- Processing section: {section} ---")
+        queries = generate_search_queries(section, research_prompt)
+        aggregated_text = ""
+        for q in queries:
+            full_query = f"{research_prompt} {q}"
+            print(f"Scraping for query: '{full_query}'")
+            aggregated_text += combined_scrape(full_query, num_urls=3) + "\n"
+            time.sleep(1)
+        print(f"Aggregated raw content length for {section}: {len(aggregated_text)}")
+        formatted_text = format_text_with_ai(aggregated_text)
+        limited_text = ensure_length_limit(formatted_text, 50000)
+        representation = generate_representation(limited_text)
+        result_dict[section] = limited_text + "\n\n" + representation
+        time.sleep(2)
+    
+    # Generate the abstract from the combined content of all sections.
+    combined_content = "\n".join(result_dict[sec] for sec in result_dict)
+    abstract_prompt = "Based on the following research content, generate a concise, empathetic abstract summarizing the key points:\n" + combined_content
+    abstract_content = rewrite_section(abstract_prompt)
+    result_dict["Abstract"] = abstract_content
+    
+    # For the References section, output only one citation—the paper used for the project.
+    # You can update the citation details below as needed.
+    result_dict["References"] = "Citation: 'A Study on Coastal Impacts of Climate Change and Air Pollution' | Source: Project Repository"
+    
+    return result_dict
+
+
+# quarto_formatter.py
+
+import os
+from utils.deepseek_client import rewrite_section
+
+def generate_title_if_empty(title: str) -> str:
+    """Generate a title if the provided one is empty."""
+    if not title or title.strip() == "":
+        generated_title = rewrite_section(
+            "Generate a creative academic title for a report on climate change impacts on coastal cities."
+        )
+        return generated_title.strip()
+    return title.strip()
+
+def parse_tables(content: str) -> str:
+    """Convert table-like text into proper Markdown tables."""
+    lines = content.split('\n')
+    new_lines = []
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith('[Table'):
+            # Found a table start
+            table_lines = []
+            i += 1
+            while i < len(lines) and lines[i].strip() != '':
+                table_lines.append(lines[i].strip())
+                i += 1
+            if table_lines:
+                # Assume first line is header
+                header = table_lines[0].split('\t') if '\t' in table_lines[0] else table_lines[0].split('  ')
+                header = [h.strip() for h in header if h.strip()]
+                data_rows = []
+                for row in table_lines[1:]:
+                    cells = row.split('\t') if '\t' in row else row.split('  ')
+                    cells = [c.strip() for c in cells if c.strip()]
+                    if len(cells) == len(header):
+                        data_rows.append(cells)
+                if header and data_rows:
+                    # Create Markdown table
+                    md_table = '| ' + ' | '.join(header) + ' |\n'
+                    md_table += '| ' + ' | '.join(['---'] * len(header)) + ' |\n'
+                    for row in data_rows:
+                        md_table += '| ' + ' | '.join(row) + ' |\n'
+                    new_lines.append(line)  # Keep the table caption
+                    new_lines.append('')    # Add a blank line
+                    new_lines.append(md_table)
+            else:
+                new_lines.append(line)
+        else:
+            new_lines.append(line)
+        i += 1
+    return '\n'.join(new_lines)
+
+def generate_qmd(topic: str, abstract: str, sections: dict) -> str:
+    """Generate a Quarto Markdown file for PDF output with proper formatting."""
+    if not topic or topic.strip() == "":
+        topic = generate_title_if_empty(topic)
+    
+    # Sanitize the title: replace double quotes with single quotes
+    topic = topic.replace('"', "'")
+    
+    # YAML front matter for PDF output
+    qmd = f"""---
+title: "{topic}"
+author: "Generated Report"
+format:
+  pdf:
+    toc: true
+    number-sections: true
+header-includes:
+  - \\usepackage{{sectsty}}
+  - \\sectionfont{{\\clearpage}}
+---
+
+"""
+    # Define fixed sections, including Abstract
+    fixed_sections = ["Abstract", "Introduction", "Literature Review", "Methodology", 
+                      "Results & Discussion", "Conclusion", "References"]
+    
+    for section in fixed_sections:
+        if section == "Abstract":
+            content = abstract
+        else:
+            content = sections.get(section, 'Content not available.')
+        
+        # Remove lines starting with %
+        content = '\n'.join([line for line in content.split('\n') if not line.strip().startswith('%')])
+        
+        # Parse tables into Markdown format
+        content = parse_tables(content)
+        
+        # Add section to the qmd file
+        qmd += f"# {section}\n\n{content}\n\n"
+    
+    return qmd
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
+from controllers.scraping_controller import generate_research_content
+from controllers.report_controller import generate_report
+
+router = APIRouter()
+
+@router.post("/generate-report")
+async def generate_report_endpoint(data: dict):
+    """
+    Expects a JSON payload with:
+    {
+       "prompt": "Your research prompt",
+       "abstract": "Optional abstract text",
+       "topic": "Optional report title"
+    }
+    
+    Process:
+      1. Scraping: Uses Gemini API (via gemini_scraper) to generate research content across fixed academic sections.
+      2. Formatting: Uses DeepSeek (if needed) and Quarto to produce a DOCX report.
+    
+    Returns the generated DOCX file.
+    """
+    if "prompt" not in data:
+        raise HTTPException(status_code=400, detail="Missing 'prompt' in payload.")
+    
+    prompt = data["prompt"]
+    # Optional: use provided topic and abstract; if abstract is not provided, use the generated abstract from scraping.
+    topic = data.get("topic", "")
+    
+    # Generate research content (which now includes an abstract)
+    scraped_sections = generate_research_content(prompt)
+    generated_abstract = scraped_sections.get("Abstract", "Abstract content not available.")
+    
+    abstract = data.get("abstract", generated_abstract)
+    
+    # Build the data structure for the formatting process:
+    report_data = {
+        "topic": topic,
+        "abstract": abstract,
+        "sections": scraped_sections  # Contains the fixed academic sections
+    }
+    
+    # Step 2: Formatting process – generate DOCX report via Quarto.
+    docx_file = generate_report(report_data)
+    return FileResponse(
+        docx_file,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename="report.docx"
+    )
+
+# report_controller.py
+
+
+import subprocess
+import os
+
+def generate_report(data: dict) -> str:
+    """
+    Generate a PDF report from the provided data dictionary.
+    """
+    topic = data.get("topic", "")
+    abstract = data.get("abstract", "")
+    sections = data.get("sections", {})
+    
+    from utils.quarto_formatter import generate_qmd  # Assuming this import exists
+    qmd_content = generate_qmd(topic, abstract, sections)
+    qmd_filename = "generated_report.qmd"
+    with open(qmd_filename, "w", encoding="utf-8") as f:
+        f.write(qmd_content)
+    
+    output_filename = "generated_report.pdf"
+    cmd = ["quarto", "render", qmd_filename, "--to", "pdf"]
+    subprocess.run(cmd, check=True)
+    
+    # Optionally, clean up the .qmd file after rendering
+    # os.remove(qmd_filename)
+    
+    return output_filename
+
+# scraping_controller.py is the controller for the scraping module.
+
+from utils.gemini_scraper import generate_research_paper
+
+def generate_research_content(prompt: str) -> dict:
+    """
+    Given a research prompt, this function calls the Gemini scraper functions
+    to generate a research paper content across fixed academic sections.
+    It returns a dictionary with keys:
+       "Introduction", "Literature Review", "Methodology", 
+       "Results & Discussion", "Conclusion", "References"
+    
+    (For simplicity, if any section isn't generated, a default placeholder is used.)
+    """
+    # The generate_research_paper function is updated to return a dictionary.
+    content_dict = generate_research_paper(prompt)
+    return content_dict
